@@ -63,4 +63,4 @@ By this we can have a highly available and responsive prod environment. Below sk
 Prod deployement
 
 
-![image](https://user-images.githubusercontent.com/26652317/130961479-30d6a8d3-afb1-449a-a086-af0fab027fc4.png)
+
