@@ -1,0 +1,87 @@
+# Run some general configuration on all AWS hosts.
+- hosts: nginx
+  gather_facts: false
+  vars:
+     root_group: root
+     nginx_conf_file_path: /etc/nginx/conf.d/static.conf
+     nginx_user: "nginx"
+     nginx_default_release: ""
+     nginx_yum_repo_enabled: true
+     nginx_ppa_use: false
+     nginx_ppa_version: stable
+     nginx_package_name: "nginx"
+     nginx_service_state: started
+     nginx_service_enabled: true
+  pre_tasks:
+    - name: to install python remotely
+      become: no
+      local_action: "shell ssh -i ./UAT.pem -o StrictHostKeyChecking=no  ec2-user@{{ inventory_hostname }} sudo yum -y install python3 unzip"
+
+  tasks:
+   - name: Wait for port 22 to become available.
+     local_action: "wait_for port=22 host={{ inventory_hostname }}"
+   - name: Set selinux into 'permissive' mode.
+     selinux: policy=targeted state=permissive
+     sudo: yes
+   - name: Ensure directory exists for local self-signed TLS certs.
+     file:
+        path: "/home/ec2-user/{{ inventory_hostname }}"
+        state: directory
+     sudo: yes
+   - name: Generate an OpenSSL private key.
+     openssl_privatekey:
+           path: "/home/ec2-user/{{ inventory_hostname }}/privkey.pem"
+     sudo: yes
+     register: privkey
+
+   - name: Generate an OpenSSL CSR.
+     openssl_csr:
+       path: "/home/ec2-user/{{ inventory_hostname}}.csr"
+       privatekey_path: "/home/ec2-user/{{ inventory_hostname }}/privkey.pem"
+       common_name: "{{ inventory_hostname }}"
+     sudo: yes
+     register: csr
+
+   - name: Generate a Self Signed OpenSSL certificate.
+     openssl_certificate:
+       path: "/home/ec2-user/{{ inventory_hostname }}/fullchain.pem"
+       privatekey_path: "/home/ec2-user/{{ inventory_hostname }}/privkey.pem"
+       csr_path: "/home/ec2-user/{{ inventory_hostname }}.csr"
+       provider: selfsigned
+     sudo: yes
+     register: certificate
+   - name: Ensure nginx is installed.
+     package:
+       name: "{{ nginx_package_name }}"
+       state: present
+     sudo: yes
+   - name: Copy nginx configuration in place.
+     unarchive:
+        src: files/static.zip
+        dest: /var/www/
+        owner: root
+        group: "{{ root_group }}"
+        mode: 0777
+     notify:
+       - reload nginx
+     sudo: yes
+   - name: Copy nginx configuration in place.
+     template:
+        src: templates/static.conf.j2
+        dest: "{{ nginx_conf_file_path }}"
+        owner: root
+        group: "{{ root_group }}"
+        mode: 0644
+     notify:
+       - reload nginx
+     sudo: yes
+   - name: Ensure nginx service is running as configured.
+     service:
+       name: nginx
+       state: "{{ nginx_service_state }}"
+       enabled: "{{ nginx_service_enabled }}"
+     sudo: yes
+  handlers:
+     - name: reload nginx
+       service: name=nginx state=reloaded
+       sudo: yes

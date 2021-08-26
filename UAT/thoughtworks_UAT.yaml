@@ -1,0 +1,191 @@
+---
+- hosts: localhost
+  vars_prompt:
+    - name: aws_access_key
+      prompt: "Please enter you AWS access key(this field is private)"
+      private: yes
+    - name: aws_secret_key
+      prompt: "Please enter you AWS secret key(this field is private)"
+      private: yes
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Create a new EC2 key
+      ec2_key:
+            aws_access_key: "{{ aws_access_key }}"
+            aws_secret_key: "{{ aws_secret_key }}"
+            name: UAT
+            region: us-east-2
+      register: ec2_key_result
+ 
+    - name: Save private key
+      copy: content="{{ ec2_key_result.key.private_key }}" dest="./UAT.pem" mode=0400
+      when: ec2_key_result.changed
+    - ec2_vpc_net:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        state: present
+        cidr_block: 172.22.0.0/16
+        tags: { "Environment":"UAT" }
+        region: us-east-2
+        name: UAT
+      register: vpc
+
+    - ec2_vpc_subnet:
+            aws_access_key: "{{ aws_access_key }}"
+            aws_secret_key: "{{ aws_secret_key }}"
+            cidr: 172.22.1.0/24
+            az: us-east-2a
+            resource_tags: { "Environment":"UAT", "Tier" : "nginx" }
+            vpc_id: "{{ vpc.vpc.id }}"
+            map_public: yes
+            wait: yes
+    - ec2_vpc_subnet:
+            aws_access_key: "{{ aws_access_key }}"
+            aws_secret_key: "{{ aws_secret_key }}"
+            cidr: 172.22.2.0/24
+            az: us-east-2b
+            resource_tags: { "Environment":"UAT", "Tier" : "tomcat" }
+            vpc_id: "{{ vpc.vpc.id }}"
+            map_public: yes
+            wait: yes
+    - ec2_vpc_igw:
+           aws_access_key: "{{ aws_access_key }}"
+           aws_secret_key: "{{ aws_secret_key }}"
+           vpc_id: "{{ vpc.vpc.id }}"
+           state: present
+           region: us-east-2
+      register: igw
+    - ec2_vpc_route_table:
+            aws_access_key: "{{ aws_access_key }}"
+            aws_secret_key: "{{ aws_secret_key }}"
+            subnets:
+              - 172.22.1.0/24
+              - 172.22.2.0/24
+            routes:
+              - dest: 0.0.0.0/0
+                gateway_id: "{{ igw.gateway_id }}"
+            region: us-east-2
+            vpc_id: "{{ vpc.vpc.id }}"
+ # This will help to get the correct VPC (we can use tag option to filter, just using random useastvpc as an example)
+    - ec2_vpc_subnet_facts:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        filters:
+          vpc-id: "{{ vpc.vpc.id }}"
+      register: result4
+      
+    - set_fact:
+        nginx_sub: "{{ item.subnet_id }}"
+      with_items: "{{ result4.subnets }}"
+      when: item.tags.Tier == "nginx"
+    - set_fact:
+        tomcat_sub: "{{ item.subnet_id }}"
+      with_items: "{{ result4.subnets }}"
+      when: item.tags.Tier == "tomcat"
+    - name: Configure EC2 Security Group nginx.
+      ec2_group:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        name: nginx_internet
+        description: security group for nginx
+        region: "us-east-2"
+        state: present
+        rules:
+          - proto: tcp
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+        rules_egress: []
+        vpc_id: "{{ vpc.vpc.id }}"
+    - name: Configure EC2 Security Group tomcat.
+      ec2_group:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        name: tomcat_internet
+        description: security group for tomcat
+        region: "us-east-2"
+        state: present
+        rules:
+          - proto: tcp
+            from_port: 8080
+            to_port: 8080
+            group_name: nginx_internet
+          - proto: tcp
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            from_port: 0-65535
+            to_port: 0-65535
+            cidr_ip: 0.0.0.0/0
+        rules_egress: []
+        vpc_id: "{{ vpc.vpc.id }}"      
+    - name: Provision nginx EC2 instance.
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        key_name: UAT
+        vpc_subnet_id: "{{ nginx_sub }}"
+        instance_tags:
+          Name: "nginx_instance"
+        group: ['default', 'nginx_internet']
+        instance_type: t2.micro
+        # Red Hat Enterprise Linux version 8 (HVM)
+        image: ami-0520e698dd500b1d1
+        region: "us-east-2"
+        wait: true
+        wait_timeout: 500
+        exact_count: 1
+        count_tag:
+          Name: "nginx_instance"
+      register: nginx_instance
+    - set_fact:
+         nginx_public_ip: "{{ nginx_instance.tagged_instances.0.public_ip }}"
+    - debug:
+         var: "{{ nginx_public_ip }}"
+    - name: Add nginx to the inventory
+      add_host:
+         name: "{{ nginx_public_ip }}"
+         group: "nginx"
+         ansible_ssh_user: ec2-user
+         ansible_private_key_file: "./UAT.pem"
+         ansible_python_interpreter: /usr/bin/python3
+    - name: Provision tomcat EC2 instance.
+      ec2:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        key_name: UAT
+        vpc_subnet_id: "{{ tomcat_sub }}"
+        instance_tags:
+          Name: "tomcat_instance"
+        group: ['default', 'tomcat_internet']
+        instance_type: t2.micro
+        # Red Hat Enterprise Linux version 8 (HVM)
+        image: ami-0f2b4fc905b0bd1f1
+        region: "us-east-2"
+        wait: true
+        wait_timeout: 500
+        exact_count: 1
+        count_tag:
+          Name: "tomcat_instance"
+      register: tomcat_instance
+    - set_fact:
+         tomcat_public_ip: "{{ tomcat_instance.tagged_instances.0.public_ip }}"
+    - name: Add nginx to the inventory
+      add_host:
+         name: "{{ tomcat_public_ip }}"
+         group: "tomcat"
+         ansible_ssh_user: centos
+         ansible_private_key_file: "./UAT.pem"
+
+ 

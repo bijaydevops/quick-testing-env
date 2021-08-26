@@ -1,0 +1,24 @@
+server {
+    listen       443 http2 ssl;
+    listen       [::]:443 http2 ssl;
+    server_name "{{ inventory_hostname }}";
+                   ssl_certificate "{{ certificate.filename }}";
+    ssl_certificate_key "{{ privkey.filename }}";
+
+    root /var/www/static/;
+    location /styles {
+                root /var/www/static/;
+                index company.css;
+                      }
+    location ~* \.(png)$ {
+   root /var/www/static/images/;
+   index logo.png;
+                               }
+        location ~* \.(css)$ {
+   root /var/www/static/styles/;
+   index company.css;
+                               }
+     location /webapp {
+    proxy_pass http://{{ groups['tomcat'][0] | replace('"','') }}:8080/webapp/;
+}
+}

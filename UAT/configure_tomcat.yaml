@@ -1,0 +1,52 @@
+# Run some general configuration on all AWS hosts.
+- hosts: tomcat
+  gather_facts: false
+  pre_tasks:
+    - name: to install python remotely
+      become: no
+      local_action: "shell ssh -i ./UAT.pem -o StrictHostKeyChecking=no  centos@{{ inventory_hostname }} ls"
+ 
+  tasks:
+   - name: Wait for port 22 to become available.
+     local_action: "wait_for port=22 host={{ inventory_hostname }}"
+   - name: Set selinux into 'permissive' mode.
+     selinux: policy=targeted state=permissive
+     sudo: yes
+   - name: Ensure java is installed
+     package:
+       name: java-1.8.0-openjdk
+       state: present
+     sudo: yes
+   - name: Ensure tomcat is installed
+     package:
+       name: tomcat
+       state: present
+     sudo: yes
+   - name: Ensure tomcat webapps and admin web apps installed
+     package:
+       name: "{{ item }}"
+       state: present
+     sudo: yes
+     with_items:
+         - tomcat-webapps
+         - tomcat-admin-webapps
+   - name: copy the files to the webapps folder
+     copy: 
+       src: files/webapp.war
+       dest: /usr/share/tomcat/webapps/
+       owner: root
+       group: root
+       mode: 0644
+     notify:
+       - reload tomcat
+     sudo: yes
+   - name: Ensure tomcat is running
+     service:
+       name: tomcat
+       state: started
+       enabled: true
+     sudo: yes
+  handlers:
+     - name: reload tomcat
+       service: name=tomcat state=restarted
+       sudo: yes

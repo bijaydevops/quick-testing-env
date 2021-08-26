@@ -1,0 +1,4 @@
+---
+- include: thoughtworks_UAT.yaml
+- include: configure_nginx.yaml
+- include: configure_tomcat.yaml
